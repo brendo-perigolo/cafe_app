@@ -1,0 +1,918 @@
+import React, { useCallback, useState } from 'react';
+import {
+    View,
+    Text,
+    StyleSheet,
+    FlatList,
+    TouchableOpacity,
+    RefreshControl,
+    Modal,
+    TextInput,
+    Alert,
+    ActivityIndicator,
+    Animated,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
+import Swipeable from 'react-native-gesture-handler/Swipeable';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { COLORS, SPACING, RADIUS, SHADOWS } from '../styles/theme';
+import {
+    Colheita,
+    ColheitaEdicao,
+    createColheitaEdicao,
+    deleteMovimentacaoComHistorico,
+    getEmpresaAtiva,
+    getHistoricoEdicoes,
+    getTodasMovimentacoes,
+} from '../database/database';
+
+type Props = {
+    navigation: NativeStackNavigationProp<any>;
+};
+
+type AbaDetalhe = 'detalhes' | 'historico';
+
+export default function MovementsScreen({ navigation }: Props) {
+    const [empresaId, setEmpresaId] = useState<number | null>(null);
+    const [movimentacoes, setMovimentacoes] = useState<Colheita[]>([]);
+    const [movimentacoesFiltradas, setMovimentacoesFiltradas] = useState<Colheita[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [refreshing, setRefreshing] = useState(false);
+    const [totalPesoFiltrado, setTotalPesoFiltrado] = useState(0);
+    const [totalValorFiltrado, setTotalValorFiltrado] = useState(0);
+
+    const hoje = new Date().toLocaleDateString('pt-BR');
+    const [filtroDataInicial, setFiltroDataInicial] = useState(hoje);
+    const [filtroDataFinal, setFiltroDataFinal] = useState(hoje);
+    const [filtroNome, setFiltroNome] = useState('');
+    const [filtroNomeInput, setFiltroNomeInput] = useState('');
+    const [showFiltros, setShowFiltros] = useState(false);
+
+    const [selectedColheita, setSelectedColheita] = useState<Colheita | null>(null);
+    const [showDetails, setShowDetails] = useState(false);
+    const [activeTab, setActiveTab] = useState<AbaDetalhe>('detalhes');
+    const [historico, setHistorico] = useState<ColheitaEdicao[]>([]);
+    const [loadingHistorico, setLoadingHistorico] = useState(false);
+
+    const [showEditModal, setShowEditModal] = useState(false);
+    const [numeroBagEdit, setNumeroBagEdit] = useState('');
+    const [pesoKgEdit, setPesoKgEdit] = useState('');
+    const [valorKgEdit, setValorKgEdit] = useState('');
+    const [savingEdit, setSavingEdit] = useState(false);
+
+    const formatDate = (dateStr: string) => {
+        const date = new Date(dateStr);
+        return date.toLocaleDateString('pt-BR', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+    };
+
+    const formatCurrency = (value: number) => {
+        return value.toLocaleString('pt-BR', {
+            style: 'currency',
+            currency: 'BRL',
+        });
+    };
+
+    const formatWeight = (value: number) => {
+        return value.toLocaleString('pt-BR', {
+            minimumFractionDigits: 1,
+            maximumFractionDigits: 1,
+        }) + ' kg';
+    };
+
+    const parseDateInput = (value: string): Date | null => {
+        const cleaned = value.trim();
+        const match = cleaned.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (!match) return null;
+
+        const [, dd, mm, yyyy] = match;
+        const date = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+        if (Number.isNaN(date.getTime())) return null;
+
+        if (
+            date.getFullYear() !== Number(yyyy) ||
+            date.getMonth() !== Number(mm) - 1 ||
+            date.getDate() !== Number(dd)
+        ) {
+            return null;
+        }
+
+        return date;
+    };
+
+    const aplicarFiltro = (rowsBase?: Colheita[], nomeFiltroOverride?: string) => {
+        const rows = rowsBase || movimentacoes;
+
+        const dataInicio = parseDateInput(filtroDataInicial);
+        const dataFim = parseDateInput(filtroDataFinal);
+
+        if (!dataInicio || !dataFim) {
+            Alert.alert('Filtro inválido', 'Use o formato de data DD/MM/AAAA.');
+            return;
+        }
+
+        if (dataFim < dataInicio) {
+            Alert.alert('Filtro inválido', 'A data final deve ser maior ou igual à data inicial.');
+            return;
+        }
+
+        dataInicio.setHours(0, 0, 0, 0);
+        dataFim.setHours(23, 59, 59, 999);
+
+        const nomeBusca = (nomeFiltroOverride ?? filtroNome).trim().toLowerCase();
+
+        const filtradas = rows.filter((item) => {
+            const dataMov = new Date(item.data_hora);
+            const dataOk = dataMov >= dataInicio && dataMov <= dataFim;
+            const nomeOk = !nomeBusca || item.apanhador_nome.toLowerCase().includes(nomeBusca);
+            return dataOk && nomeOk;
+        });
+
+        const totalPeso = filtradas.reduce((acc, item) => acc + item.peso_kg, 0);
+        const totalValor = filtradas.reduce((acc, item) => acc + item.valor_total, 0);
+
+        setMovimentacoesFiltradas(filtradas);
+        setTotalPesoFiltrado(totalPeso);
+        setTotalValorFiltrado(totalValor);
+    };
+
+    const loadData = async () => {
+        try {
+            const empresa = await getEmpresaAtiva();
+            if (!empresa?.id) {
+                setMovimentacoes([]);
+                setEmpresaId(null);
+                return;
+            }
+
+            setEmpresaId(empresa.id);
+            const rows = await getTodasMovimentacoes(empresa.id);
+            setMovimentacoes(rows);
+            const dataInicio = parseDateInput(filtroDataInicial);
+            const dataFim = parseDateInput(filtroDataFinal);
+            if (dataInicio && dataFim) {
+                aplicarFiltro(rows);
+            } else {
+                setMovimentacoesFiltradas(rows);
+                setTotalPesoFiltrado(rows.reduce((acc, item) => acc + item.peso_kg, 0));
+                setTotalValorFiltrado(rows.reduce((acc, item) => acc + item.valor_total, 0));
+            }
+        } catch (error) {
+            console.error('Erro ao carregar movimentações:', error);
+            Alert.alert('Erro', 'Não foi possível carregar as movimentações.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useFocusEffect(
+        useCallback(() => {
+            loadData();
+        }, [])
+    );
+
+    const onRefresh = async () => {
+        setRefreshing(true);
+        await loadData();
+        setRefreshing(false);
+    };
+
+    const renderFiltros = () => (
+        <View>
+            <View style={styles.filterToggleBar}>
+                <TouchableOpacity
+                    style={styles.filterIconButton}
+                    onPress={() => setShowFiltros((prev) => !prev)}
+                    activeOpacity={0.8}
+                >
+                    <Ionicons name="funnel-outline" size={20} color={COLORS.textWhite} />
+                </TouchableOpacity>
+            </View>
+
+            {showFiltros && (
+                <View style={styles.filterCard}>
+                    <Text style={styles.filterTitle}>Filtros</Text>
+
+                    <Text style={styles.fieldLabel}>Data inicial (DD/MM/AAAA)</Text>
+                    <TextInput
+                        style={styles.input}
+                        value={filtroDataInicial}
+                        onChangeText={setFiltroDataInicial}
+                        placeholder="DD/MM/AAAA"
+                        placeholderTextColor={COLORS.textLight}
+                        keyboardType="number-pad"
+                    />
+
+                    <Text style={styles.fieldLabel}>Data final (DD/MM/AAAA)</Text>
+                    <TextInput
+                        style={styles.input}
+                        value={filtroDataFinal}
+                        onChangeText={setFiltroDataFinal}
+                        placeholder="DD/MM/AAAA"
+                        placeholderTextColor={COLORS.textLight}
+                        keyboardType="number-pad"
+                    />
+
+                    <Text style={styles.fieldLabel}>Nome</Text>
+                    <TextInput
+                        style={styles.input}
+                        value={filtroNomeInput}
+                        onChangeText={setFiltroNomeInput}
+                        placeholder="Nome do apanhador"
+                        placeholderTextColor={COLORS.textLight}
+                    />
+
+                    <TouchableOpacity
+                        style={styles.filterButton}
+                        onPress={() => {
+                            setFiltroNome(filtroNomeInput);
+                            aplicarFiltro(undefined, filtroNomeInput);
+                        }}
+                    >
+                        <Ionicons name="funnel-outline" size={18} color={COLORS.textWhite} />
+                        <Text style={styles.filterButtonText}>Filtrar</Text>
+                    </TouchableOpacity>
+
+                    <View style={styles.totalsRow}>
+                        <View style={styles.totalItem}>
+                            <Text style={styles.totalLabel}>Peso total</Text>
+                            <Text style={styles.totalValue}>{formatWeight(totalPesoFiltrado)}</Text>
+                        </View>
+                        <View style={styles.totalItem}>
+                            <Text style={styles.totalLabel}>Preço total</Text>
+                            <Text style={styles.totalValue}>{formatCurrency(totalValorFiltrado)}</Text>
+                        </View>
+                    </View>
+                </View>
+            )}
+        </View>
+    );
+
+    const loadHistorico = async (item: Colheita) => {
+        if (!empresaId) return;
+        const grupo = item.grupo_ticket_id || item.id;
+
+        setLoadingHistorico(true);
+        try {
+            const rows = await getHistoricoEdicoes(grupo, empresaId);
+            setHistorico(rows);
+        } catch (error) {
+            console.error('Erro ao carregar histórico:', error);
+            setHistorico([]);
+        } finally {
+            setLoadingHistorico(false);
+        }
+    };
+
+    const openDetails = async (item: Colheita) => {
+        setSelectedColheita(item);
+        setActiveTab('detalhes');
+        setShowDetails(true);
+        await loadHistorico(item);
+    };
+
+    const openEditModal = (item: Colheita) => {
+        setSelectedColheita(item);
+        setNumeroBagEdit(String(item.numero_bag));
+        setPesoKgEdit(String(item.peso_kg).replace('.', ','));
+        setValorKgEdit(String(item.valor_por_kg).replace('.', ','));
+        setShowEditModal(true);
+    };
+
+    const handleDeleteMovimentacao = (item: Colheita) => {
+        if (!empresaId) return;
+
+        Alert.alert(
+            'Excluir movimentação',
+            `Deseja excluir o ticket ${item.id}? O histórico vinculado também será removido.`,
+            [
+                { text: 'Cancelar', style: 'cancel' },
+                {
+                    text: 'Excluir',
+                    style: 'destructive',
+                    onPress: async () => {
+                        try {
+                            await deleteMovimentacaoComHistorico(item.id, empresaId);
+                            if (showDetails && selectedColheita?.id === item.id) {
+                                setShowDetails(false);
+                                setSelectedColheita(null);
+                                setHistorico([]);
+                            }
+                            await loadData();
+                        } catch (error) {
+                            console.error('Erro ao excluir movimentação:', error);
+                            Alert.alert('Erro', 'Não foi possível excluir a movimentação.');
+                        }
+                    },
+                },
+            ]
+        );
+    };
+
+    const handleSaveEdit = async () => {
+        if (!selectedColheita) return;
+
+        const numeroBag = parseInt(numeroBagEdit, 10);
+        const pesoKg = parseFloat(pesoKgEdit.replace(',', '.'));
+        const valorKg = parseFloat(valorKgEdit.replace(',', '.'));
+
+        if (!numeroBag || !pesoKg || pesoKg <= 0 || valorKg < 0) {
+            Alert.alert('Validação', 'Preencha os campos com valores válidos.');
+            return;
+        }
+
+        const valorTotal = pesoKg * valorKg;
+
+        setSavingEdit(true);
+        try {
+            const colheitaEditada = await createColheitaEdicao(selectedColheita, {
+                numero_bag: numeroBag,
+                peso_kg: pesoKg,
+                valor_por_kg: valorKg,
+                valor_total: valorTotal,
+            });
+
+            setShowEditModal(false);
+            await loadData();
+
+            Alert.alert(
+                'Edição registrada',
+                `Ticket atualizado: ${colheitaEditada.id}\nVersão: #${colheitaEditada.numero_ticket || 1}`
+            );
+
+            setSelectedColheita(colheitaEditada);
+            setShowDetails(true);
+            setActiveTab('historico');
+            await loadHistorico(colheitaEditada);
+        } catch (error) {
+            console.error('Erro ao salvar edição:', error);
+            Alert.alert('Erro', 'Não foi possível salvar a edição.');
+        } finally {
+            setSavingEdit(false);
+        }
+    };
+
+    const renderLeftActions = (progress: Animated.AnimatedInterpolation<number>, item: Colheita) => {
+        const translateX = progress.interpolate({
+            inputRange: [0, 1],
+            outputRange: [-30, 0],
+            extrapolate: 'clamp',
+        });
+        const opacity = progress.interpolate({
+            inputRange: [0, 0.35, 1],
+            outputRange: [0, 0.45, 1],
+            extrapolate: 'clamp',
+        });
+
+        return (
+            <TouchableOpacity style={styles.swipeEditAction} onPress={() => openEditModal(item)} activeOpacity={0.8}>
+                <Animated.View style={[styles.swipeActionContent, { opacity, transform: [{ translateX }] }]}>
+                    <Ionicons name="create-outline" size={20} color={COLORS.textWhite} />
+                    <Text style={styles.swipeActionText}>Editar</Text>
+                </Animated.View>
+            </TouchableOpacity>
+        );
+    };
+
+    const renderRightActions = (progress: Animated.AnimatedInterpolation<number>, item: Colheita) => {
+        const translateX = progress.interpolate({
+            inputRange: [0, 1],
+            outputRange: [30, 0],
+            extrapolate: 'clamp',
+        });
+        const opacity = progress.interpolate({
+            inputRange: [0, 0.35, 1],
+            outputRange: [0, 0.45, 1],
+            extrapolate: 'clamp',
+        });
+
+        return (
+            <TouchableOpacity
+                style={styles.swipeDeleteAction}
+                onPress={() => handleDeleteMovimentacao(item)}
+                activeOpacity={0.8}
+            >
+                <Animated.View style={[styles.swipeActionContent, { opacity, transform: [{ translateX }] }]}>
+                    <Ionicons name="trash-outline" size={20} color={COLORS.textWhite} />
+                    <Text style={styles.swipeActionText}>Excluir</Text>
+                </Animated.View>
+            </TouchableOpacity>
+        );
+    };
+
+    const renderMovimento = ({ item }: { item: Colheita }) => (
+        <Swipeable
+            renderLeftActions={(progress) => renderLeftActions(progress, item)}
+            renderRightActions={(progress) => renderRightActions(progress, item)}
+            leftThreshold={36}
+            rightThreshold={36}
+            overshootLeft={false}
+            overshootRight={false}
+        >
+            <TouchableOpacity style={styles.card} activeOpacity={0.9} onPress={() => openDetails(item)}>
+                <View style={styles.cardHeader}>
+                    <Text style={styles.ticket}>Ticket: {item.id}</Text>
+                    <Text style={styles.ticketVersao}>Versão #{item.numero_ticket || 1}</Text>
+                </View>
+
+                {!!item.ticket_anterior_id && (
+                    <Text style={styles.ticketAnterior}>Ticket anterior: {item.ticket_anterior_id}</Text>
+                )}
+
+                <Text style={styles.apanhador}>{item.apanhador_nome}</Text>
+                <Text style={styles.date}>{formatDate(item.data_hora)}</Text>
+
+                <View style={styles.metricsRow}>
+                    <Text style={styles.metric}>Bag #{item.numero_bag}</Text>
+                    <Text style={styles.metric}>{formatWeight(item.peso_kg)}</Text>
+                    <Text style={styles.metric}>{formatCurrency(item.valor_total)}</Text>
+                </View>
+
+                <Text style={styles.swipeHint}>Arraste para direita: Editar • Arraste para esquerda: Excluir</Text>
+            </TouchableOpacity>
+        </Swipeable>
+    );
+
+    if (loading) {
+        return (
+            <View style={styles.centered}>
+                <ActivityIndicator size="large" color={COLORS.primary} />
+            </View>
+        );
+    }
+
+    return (
+        <View style={styles.container}>
+            <View style={styles.filtersWrapper}>
+                {renderFiltros()}
+            </View>
+
+            <FlatList
+                data={movimentacoesFiltradas}
+                keyExtractor={(item) => item.id}
+                renderItem={renderMovimento}
+                contentContainerStyle={styles.listContent}
+                keyboardShouldPersistTaps="handled"
+                refreshControl={
+                    <RefreshControl
+                        refreshing={refreshing}
+                        onRefresh={onRefresh}
+                        colors={[COLORS.primary]}
+                        tintColor={COLORS.primary}
+                    />
+                }
+                ListEmptyComponent={
+                    <View style={styles.emptyBox}>
+                        <Ionicons name="documents-outline" size={54} color={COLORS.border} />
+                        <Text style={styles.emptyTitle}>Sem movimentações</Text>
+                        <Text style={styles.emptyText}>Registre uma colheita para iniciar o histórico.</Text>
+                    </View>
+                }
+            />
+
+            <Modal visible={showEditModal} transparent animationType="slide" onRequestClose={() => setShowEditModal(false)}>
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalCard}>
+                        <Text style={styles.modalTitle}>Editar movimentação</Text>
+                        <Text style={styles.modalSubTitle}>A edição mantém o mesmo ticket e registra histórico.</Text>
+
+                        <Text style={styles.fieldLabel}>Número da bag</Text>
+                        <TextInput
+                            style={styles.input}
+                            value={numeroBagEdit}
+                            onChangeText={setNumeroBagEdit}
+                            keyboardType="number-pad"
+                        />
+
+                        <Text style={styles.fieldLabel}>Peso (kg)</Text>
+                        <TextInput
+                            style={styles.input}
+                            value={pesoKgEdit}
+                            onChangeText={setPesoKgEdit}
+                            keyboardType="decimal-pad"
+                        />
+
+                        <Text style={styles.fieldLabel}>Valor por kg</Text>
+                        <TextInput
+                            style={styles.input}
+                            value={valorKgEdit}
+                            onChangeText={setValorKgEdit}
+                            keyboardType="decimal-pad"
+                        />
+
+                        <View style={styles.modalActions}>
+                            <TouchableOpacity style={styles.cancelButton} onPress={() => setShowEditModal(false)}>
+                                <Text style={styles.cancelText}>Cancelar</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                                style={[styles.saveButton, savingEdit && { opacity: 0.7 }]}
+                                onPress={handleSaveEdit}
+                                disabled={savingEdit}
+                            >
+                                {savingEdit ? (
+                                    <ActivityIndicator color={COLORS.textWhite} size="small" />
+                                ) : (
+                                    <Text style={styles.saveText}>Salvar edição</Text>
+                                )}
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
+
+            <Modal visible={showDetails} transparent animationType="fade" onRequestClose={() => setShowDetails(false)}>
+                <View style={styles.modalOverlay}>
+                    <View style={styles.detailsCard}>
+                        <View style={styles.detailsHeader}>
+                            <Text style={styles.modalTitle}>Ticket {selectedColheita?.id}</Text>
+                            <TouchableOpacity onPress={() => setShowDetails(false)}>
+                                <Ionicons name="close" size={24} color={COLORS.textLight} />
+                            </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.tabsRow}>
+                            <TouchableOpacity
+                                style={[styles.tabButton, activeTab === 'detalhes' && styles.tabButtonActive]}
+                                onPress={() => setActiveTab('detalhes')}
+                            >
+                                <Text style={[styles.tabText, activeTab === 'detalhes' && styles.tabTextActive]}>Detalhes</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                                style={[styles.tabButton, activeTab === 'historico' && styles.tabButtonActive]}
+                                onPress={() => setActiveTab('historico')}
+                            >
+                                <Text style={[styles.tabText, activeTab === 'historico' && styles.tabTextActive]}>Histórico</Text>
+                            </TouchableOpacity>
+                        </View>
+
+                        {activeTab === 'detalhes' && selectedColheita && (
+                            <View style={styles.quickInfoBox}>
+                                <Text style={styles.quickInfo}>Apanhador: {selectedColheita.apanhador_nome}</Text>
+                                <Text style={styles.quickInfo}>Data: {formatDate(selectedColheita.data_hora)}</Text>
+                                <Text style={styles.quickInfo}>Bag: #{selectedColheita.numero_bag}</Text>
+                                <Text style={styles.quickInfo}>Peso: {formatWeight(selectedColheita.peso_kg)}</Text>
+                                <Text style={styles.quickInfo}>Valor/kg: {formatCurrency(selectedColheita.valor_por_kg)}</Text>
+                                <Text style={styles.quickInfo}>Valor total: {formatCurrency(selectedColheita.valor_total)}</Text>
+                                <Text style={styles.quickInfo}>Nº ticket: {selectedColheita.numero_ticket || 1}</Text>
+                            </View>
+                        )}
+
+                        {activeTab === 'historico' && (
+                            <View style={styles.historyBox}>
+                                {loadingHistorico ? (
+                                    <ActivityIndicator color={COLORS.primary} />
+                                ) : historico.length === 0 ? (
+                                    <Text style={styles.emptyText}>Sem histórico de edição para este ticket.</Text>
+                                ) : (
+                                    <FlatList
+                                        data={historico}
+                                        keyExtractor={(item) => String(item.id)}
+                                        renderItem={({ item }) => (
+                                            <View style={styles.historyItem}>
+                                                <Text style={styles.historyTitle}>Ticket editado: {item.novo_ticket_id}</Text>
+                                                <Text style={styles.historySubtitle}>{formatDate(item.editado_em)}</Text>
+                                                <Text style={styles.historyResume}>{item.resumo_rapido}</Text>
+                                            </View>
+                                        )}
+                                        ItemSeparatorComponent={() => <View style={{ height: SPACING.sm }} />}
+                                    />
+                                )}
+                            </View>
+                        )}
+                    </View>
+                </View>
+            </Modal>
+        </View>
+    );
+}
+
+const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+        backgroundColor: COLORS.background,
+    },
+    centered: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: COLORS.background,
+    },
+    listContent: {
+        padding: SPACING.md,
+        paddingBottom: SPACING.xxl,
+    },
+    filtersWrapper: {
+        paddingHorizontal: SPACING.md,
+        paddingTop: SPACING.md,
+    },
+    filterToggleBar: {
+        alignItems: 'flex-end',
+        marginBottom: SPACING.sm,
+    },
+    filterIconButton: {
+        width: 42,
+        height: 42,
+        borderRadius: 21,
+        backgroundColor: COLORS.primary,
+        alignItems: 'center',
+        justifyContent: 'center',
+        ...SHADOWS.small,
+    },
+    filterCard: {
+        backgroundColor: COLORS.card,
+        borderRadius: RADIUS.md,
+        padding: SPACING.md,
+        marginBottom: SPACING.md,
+        ...SHADOWS.small,
+    },
+    filterTitle: {
+        color: COLORS.textPrimary,
+        fontSize: 16,
+        fontWeight: '700',
+        marginBottom: SPACING.xs,
+    },
+    filterButton: {
+        marginTop: SPACING.md,
+        backgroundColor: COLORS.primary,
+        borderRadius: RADIUS.sm,
+        paddingVertical: SPACING.sm,
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'row',
+        gap: 6,
+    },
+    filterButtonText: {
+        color: COLORS.textWhite,
+        fontWeight: '700',
+        fontSize: 14,
+    },
+    totalsRow: {
+        marginTop: SPACING.md,
+        flexDirection: 'row',
+        gap: SPACING.sm,
+    },
+    totalItem: {
+        flex: 1,
+        backgroundColor: COLORS.background,
+        borderRadius: RADIUS.sm,
+        padding: SPACING.sm,
+    },
+    totalLabel: {
+        color: COLORS.textSecondary,
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    totalValue: {
+        marginTop: 4,
+        color: COLORS.accent,
+        fontSize: 15,
+        fontWeight: '700',
+    },
+    card: {
+        backgroundColor: COLORS.card,
+        borderRadius: RADIUS.md,
+        padding: SPACING.md,
+        marginBottom: SPACING.sm,
+        ...SHADOWS.small,
+    },
+    swipeEditAction: {
+        flex: 1,
+        marginBottom: SPACING.sm,
+        borderRadius: RADIUS.md,
+        backgroundColor: COLORS.accent,
+        justifyContent: 'center',
+        paddingHorizontal: SPACING.md,
+    },
+    swipeDeleteAction: {
+        flex: 1,
+        marginBottom: SPACING.sm,
+        borderRadius: RADIUS.md,
+        backgroundColor: COLORS.error,
+        justifyContent: 'center',
+        alignItems: 'flex-end',
+        paddingHorizontal: SPACING.md,
+    },
+    swipeActionContent: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+    },
+    swipeActionText: {
+        color: COLORS.textWhite,
+        fontWeight: '700',
+        fontSize: 14,
+    },
+    cardHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    ticket: {
+        color: COLORS.textPrimary,
+        fontWeight: '700',
+        fontSize: 14,
+    },
+    ticketVersao: {
+        color: COLORS.info,
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    ticketAnterior: {
+        marginTop: 4,
+        color: COLORS.textSecondary,
+        fontSize: 12,
+    },
+    apanhador: {
+        marginTop: SPACING.xs,
+        color: COLORS.textPrimary,
+        fontWeight: '600',
+        fontSize: 15,
+    },
+    date: {
+        marginTop: 2,
+        color: COLORS.textLight,
+        fontSize: 12,
+    },
+    metricsRow: {
+        marginTop: SPACING.sm,
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: SPACING.xs,
+    },
+    metric: {
+        backgroundColor: COLORS.background,
+        color: COLORS.textSecondary,
+        fontSize: 12,
+        fontWeight: '600',
+        borderRadius: RADIUS.sm,
+        paddingHorizontal: SPACING.sm,
+        paddingVertical: 4,
+    },
+    swipeHint: {
+        marginTop: SPACING.sm,
+        color: COLORS.textLight,
+        fontSize: 11,
+    },
+    emptyBox: {
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginTop: SPACING.xxl,
+    },
+    emptyTitle: {
+        marginTop: SPACING.md,
+        fontWeight: '700',
+        color: COLORS.textSecondary,
+        fontSize: 16,
+    },
+    emptyText: {
+        marginTop: SPACING.xs,
+        color: COLORS.textLight,
+        textAlign: 'center',
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.35)',
+        justifyContent: 'center',
+        padding: SPACING.md,
+    },
+    modalCard: {
+        backgroundColor: COLORS.card,
+        borderRadius: RADIUS.lg,
+        padding: SPACING.md,
+    },
+    modalTitle: {
+        color: COLORS.textPrimary,
+        fontSize: 18,
+        fontWeight: '700',
+    },
+    modalSubTitle: {
+        marginTop: 4,
+        color: COLORS.textLight,
+        fontSize: 13,
+    },
+    fieldLabel: {
+        marginTop: SPACING.md,
+        color: COLORS.textSecondary,
+        fontWeight: '600',
+    },
+    input: {
+        marginTop: 6,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        borderRadius: RADIUS.sm,
+        paddingHorizontal: SPACING.sm,
+        paddingVertical: SPACING.sm,
+        color: COLORS.textPrimary,
+        backgroundColor: COLORS.background,
+    },
+    modalActions: {
+        marginTop: SPACING.lg,
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        gap: SPACING.sm,
+    },
+    cancelButton: {
+        flex: 1,
+        borderRadius: RADIUS.sm,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: SPACING.sm,
+    },
+    cancelText: {
+        color: COLORS.textSecondary,
+        fontWeight: '600',
+    },
+    saveButton: {
+        flex: 1,
+        borderRadius: RADIUS.sm,
+        backgroundColor: COLORS.accent,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: SPACING.sm,
+    },
+    saveText: {
+        color: COLORS.textWhite,
+        fontWeight: '700',
+    },
+    detailsCard: {
+        backgroundColor: COLORS.card,
+        borderRadius: RADIUS.lg,
+        maxHeight: '85%',
+        padding: SPACING.md,
+    },
+    detailsHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    tabsRow: {
+        marginTop: SPACING.md,
+        flexDirection: 'row',
+        gap: SPACING.sm,
+    },
+    tabButton: {
+        flex: 1,
+        borderRadius: RADIUS.sm,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        paddingVertical: SPACING.sm,
+        alignItems: 'center',
+    },
+    tabButtonActive: {
+        borderColor: COLORS.primary,
+        backgroundColor: COLORS.background,
+    },
+    tabText: {
+        color: COLORS.textSecondary,
+        fontWeight: '600',
+    },
+    tabTextActive: {
+        color: COLORS.primary,
+    },
+    quickInfoBox: {
+        marginTop: SPACING.md,
+        backgroundColor: COLORS.background,
+        borderRadius: RADIUS.sm,
+        padding: SPACING.md,
+        gap: SPACING.xs,
+    },
+    quickInfo: {
+        color: COLORS.textPrimary,
+        fontSize: 13,
+    },
+    historyBox: {
+        marginTop: SPACING.md,
+        maxHeight: 360,
+    },
+    historyItem: {
+        borderWidth: 1,
+        borderColor: COLORS.divider,
+        borderRadius: RADIUS.sm,
+        padding: SPACING.sm,
+    },
+    historyTitle: {
+        color: COLORS.textPrimary,
+        fontWeight: '700',
+        fontSize: 13,
+    },
+    historySubtitle: {
+        marginTop: 2,
+        color: COLORS.textLight,
+        fontSize: 12,
+    },
+    historyResume: {
+        marginTop: SPACING.xs,
+        color: COLORS.textSecondary,
+        fontSize: 12,
+    },
+});
