@@ -75,7 +75,7 @@ export default function LicenseScreen({ navigation }: Props) {
                 setLoading(false);
                 navigation.reset({
                     index: 0,
-                    routes: [{ name: 'Dashboard' }],
+                    routes: [{ name: 'Login' }],
                 });
             }, 500);
         } catch (error) {

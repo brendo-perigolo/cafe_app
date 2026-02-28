@@ -27,8 +27,12 @@ import {
     Apanhador,
     searchApanhadores,
     insertApanhador,
-    getAllApanhadores,
+    getColheitaById,
+    getApanhadorById,
 } from '../database/database';
+import { triggerFullSync } from '../services/syncService';
+import { subscribeColheitaSynced } from '../services/syncEvents';
+import { queueApanhadorForSync, queueColheitaForSync } from '../services/offlineQueueService';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 type Props = {
@@ -63,6 +67,7 @@ export default function HarvestEntryScreen({ navigation }: Props) {
     const [showTicket, setShowTicket] = useState(false);
     const [savedColheita, setSavedColheita] = useState<Colheita | null>(null);
     const [reprintCount, setReprintCount] = useState(0);
+    const [manualSyncing, setManualSyncing] = useState(false);
 
     // Apanhador states
     const [apanhadorSearch, setApanhadorSearch] = useState('');
@@ -91,6 +96,18 @@ export default function HarvestEntryScreen({ navigation }: Props) {
             useNativeDriver: true,
         }).start();
     }, []);
+
+    useEffect(() => {
+        if (!savedColheita?.id) return;
+        const unsubscribe = subscribeColheitaSynced(async (colheitaId) => {
+            if (colheitaId !== savedColheita.id) return;
+            const refreshed = await getColheitaById(colheitaId);
+            if (refreshed) {
+                setSavedColheita(refreshed);
+            }
+        });
+        return unsubscribe;
+    }, [savedColheita?.id]);
 
     const generateCode = async () => {
         const uuid = await Crypto.randomUUID();
@@ -276,19 +293,24 @@ export default function HarvestEntryScreen({ navigation }: Props) {
                 id_empresa: empresaId,
             });
 
-            const newAp: Apanhador = {
-                id,
-                nome: newNome.trim(),
-                sobrenome_apelido: newSobrenome.trim(),
-                telefone: telefoneClean ?? undefined,
-                cpf: cpfClean ?? undefined,
-                id_empresa: empresaId,
-            };
+            await queueApanhadorForSync(id, empresaId);
+
+            const persistedApanhador = await getApanhadorById(id);
+            const newAp: Apanhador =
+                persistedApanhador || {
+                    id,
+                    nome: newNome.trim(),
+                    sobrenome_apelido: newSobrenome.trim(),
+                    telefone: telefoneClean ?? undefined,
+                    cpf: cpfClean ?? undefined,
+                    id_empresa: empresaId,
+                };
 
             setSelectedApanhador(newAp);
             setApanhadorSearch(`${newAp.nome} ${newAp.sobrenome_apelido}`);
             setShowNewApanhadorModal(false);
             setSavingApanhador(false);
+            triggerFullSync();
         } catch (error) {
             setSavingApanhador(false);
             Alert.alert('Erro', 'Não foi possível cadastrar o apanhador.');
@@ -346,12 +368,19 @@ export default function HarvestEntryScreen({ navigation }: Props) {
                 valor_total: valorTotal(),
                 assinatura_base64: assinatura || undefined,
                 id_empresa: empresaId,
+                local_panhador_uuid: selectedApanhador.local_uuid || undefined,
+                remote_panhador_id: selectedApanhador.remote_id || undefined,
+                sync_status: 'pending_sync',
             };
 
             await insertColheita(colheita);
-            setSavedColheita(colheita);
+            await queueColheitaForSync(colheita.id, empresaId);
+            const stored = await getColheitaById(colheita.id);
+            setSavedColheita(stored || colheita);
             setReprintCount(0);
             setLoading(false);
+
+            triggerFullSync();
 
             setShowTicket(true);
             Animated.spring(ticketAnim, {
@@ -378,6 +407,23 @@ export default function HarvestEntryScreen({ navigation }: Props) {
             setLoading(false);
             Alert.alert('Erro', 'Não foi possível salvar a colheita. Tente novamente.');
             console.error(error);
+        }
+    };
+
+    const handleManualSync = async () => {
+        if (!savedColheita?.id) return;
+        setManualSyncing(true);
+        try {
+            await triggerFullSync();
+            const refreshed = await getColheitaById(savedColheita.id);
+            if (refreshed) {
+                setSavedColheita(refreshed);
+            }
+        } catch (error) {
+            console.error('Erro ao sincronizar manualmente:', error);
+            Alert.alert('Erro', 'Não foi possível sincronizar agora. Tente novamente mais tarde.');
+        } finally {
+            setManualSyncing(false);
         }
     };
 
@@ -645,6 +691,47 @@ export default function HarvestEntryScreen({ navigation }: Props) {
 
                             <Text style={styles.ticketCompany}>{empresaNome}</Text>
                             <Text style={styles.ticketSubhead}>Comprovante de Colheita</Text>
+
+                            <View
+                                style={[
+                                    styles.syncStatusPill,
+                                    savedColheita.sincronizado ? styles.syncStatusPillSynced : styles.syncStatusPillPending,
+                                ]}
+                            >
+                                <Ionicons
+                                    name={savedColheita.sincronizado ? 'cloud-done' : 'cloud-offline'}
+                                    size={18}
+                                    color={savedColheita.sincronizado ? COLORS.success : COLORS.warning}
+                                />
+                                <Text style={styles.syncStatusText}>
+                                    {savedColheita.sincronizado
+                                        ? 'Sincronizado com o Supabase'
+                                        : 'Pendente de sincronização'}
+                                </Text>
+                            </View>
+
+                            {!savedColheita.sincronizado && (
+                                <>
+                                    {savedColheita.sync_error && (
+                                        <Text style={styles.syncErrorText}>{savedColheita.sync_error}</Text>
+                                    )}
+                                    <TouchableOpacity
+                                        style={[styles.syncRetryButton, manualSyncing && styles.syncRetryButtonDisabled]}
+                                        onPress={handleManualSync}
+                                        disabled={manualSyncing}
+                                        activeOpacity={0.85}
+                                    >
+                                        {manualSyncing ? (
+                                            <ActivityIndicator size="small" color={COLORS.textWhite} />
+                                        ) : (
+                                            <>
+                                                <Ionicons name="cloud-upload-outline" size={18} color={COLORS.textWhite} />
+                                                <Text style={styles.syncRetryText}>Sincronizar agora</Text>
+                                            </>
+                                        )}
+                                    </TouchableOpacity>
+                                </>
+                            )}
 
                             <View style={styles.ticketCodeWrap}>
                                 <Text style={styles.ticketCodeLabel}>CÓDIGO</Text>
@@ -1218,6 +1305,45 @@ const styles = StyleSheet.create({
     ticketNotchRight: { width: 16, height: 16, borderRadius: 8, backgroundColor: 'rgba(0,0,0,0.6)', marginRight: -8 },
     ticketCompany: { fontSize: 18, fontWeight: '700', color: COLORS.textPrimary, textAlign: 'center' },
     ticketSubhead: { fontSize: 12, color: COLORS.textLight, textAlign: 'center', marginTop: 2, marginBottom: SPACING.md, textTransform: 'uppercase', letterSpacing: 1 },
+    syncStatusPill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: SPACING.xs,
+        paddingVertical: 8,
+        paddingHorizontal: SPACING.md,
+        borderRadius: RADIUS.md,
+        marginBottom: SPACING.xs,
+    },
+    syncStatusPillSynced: {
+        backgroundColor: 'rgba(56, 142, 60, 0.18)',
+    },
+    syncStatusPillPending: {
+        backgroundColor: 'rgba(251, 140, 0, 0.18)',
+    },
+    syncStatusText: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: COLORS.textPrimary,
+        flex: 1,
+    },
+    syncErrorText: {
+        color: COLORS.error,
+        fontSize: 12,
+        textAlign: 'center',
+        marginBottom: SPACING.xs,
+    },
+    syncRetryButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: COLORS.primary,
+        borderRadius: RADIUS.md,
+        paddingVertical: 10,
+        marginBottom: SPACING.md,
+        gap: SPACING.xs,
+    },
+    syncRetryButtonDisabled: { opacity: 0.6 },
+    syncRetryText: { color: COLORS.textWhite, fontWeight: '700' },
     ticketCodeWrap: { backgroundColor: COLORS.background, borderRadius: RADIUS.md, padding: SPACING.md, alignItems: 'center', marginBottom: SPACING.md },
     ticketCodeLabel: { fontSize: 10, color: COLORS.textLight, fontWeight: '600', letterSpacing: 1 },
     ticketCode: { fontSize: 20, fontWeight: '800', color: COLORS.primary, letterSpacing: 1.5, marginTop: 2 },

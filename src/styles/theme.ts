@@ -39,41 +39,49 @@ export const COLORS = {
     gradientEnd: '#3E2723',
 };
 
+export const FONT_FAMILY = {
+    regular: 'Nunito_400Regular',
+    medium: 'Nunito_600SemiBold',
+    bold: 'Nunito_700Bold',
+};
+
 export const FONTS = {
     regular: {
         fontSize: 14,
         color: COLORS.textPrimary,
+        fontFamily: FONT_FAMILY.regular,
     },
     medium: {
         fontSize: 16,
-        fontWeight: '500' as const,
         color: COLORS.textPrimary,
+        fontFamily: FONT_FAMILY.medium,
     },
     bold: {
         fontSize: 16,
-        fontWeight: '700' as const,
         color: COLORS.textPrimary,
+        fontFamily: FONT_FAMILY.bold,
     },
     title: {
         fontSize: 24,
-        fontWeight: '700' as const,
         color: COLORS.textPrimary,
+        fontFamily: FONT_FAMILY.bold,
     },
     subtitle: {
         fontSize: 18,
-        fontWeight: '600' as const,
         color: COLORS.textSecondary,
+        fontFamily: FONT_FAMILY.medium,
     },
     small: {
         fontSize: 12,
         color: COLORS.textLight,
+        fontFamily: FONT_FAMILY.regular,
     },
     label: {
         fontSize: 13,
-        fontWeight: '600' as const,
         color: COLORS.textSecondary,
         textTransform: 'uppercase' as const,
         letterSpacing: 0.8,
+        fontFamily: FONT_FAMILY.medium,
     },
 };
 

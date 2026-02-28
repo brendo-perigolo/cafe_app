@@ -26,6 +26,7 @@ import {
     getHistoricoEdicoes,
     getTodasMovimentacoes,
 } from '../database/database';
+import { triggerFullSync } from '../services/syncService';
 
 type Props = {
     navigation: NativeStackNavigationProp<any>;
@@ -305,6 +306,7 @@ export default function MovementsScreen({ navigation }: Props) {
                                 setHistorico([]);
                             }
                             await loadData();
+                            triggerFullSync();
                         } catch (error) {
                             console.error('Erro ao excluir movimentação:', error);
                             Alert.alert('Erro', 'Não foi possível excluir a movimentação.');
@@ -340,6 +342,7 @@ export default function MovementsScreen({ navigation }: Props) {
 
             setShowEditModal(false);
             await loadData();
+            triggerFullSync();
 
             Alert.alert(
                 'Edição registrada',
@@ -432,6 +435,27 @@ export default function MovementsScreen({ navigation }: Props) {
                     <Text style={styles.metric}>Bag #{item.numero_bag}</Text>
                     <Text style={styles.metric}>{formatWeight(item.peso_kg)}</Text>
                     <Text style={styles.metric}>{formatCurrency(item.valor_total)}</Text>
+                </View>
+
+                <View style={styles.syncRow}>
+                    <View
+                        style={[
+                            styles.syncChip,
+                            item.sincronizado ? styles.syncChipSynced : styles.syncChipPending,
+                        ]}
+                    >
+                        <Ionicons
+                            name={item.sincronizado ? 'cloud-done' : 'cloud-offline'}
+                            size={14}
+                            color={item.sincronizado ? COLORS.success : COLORS.warning}
+                        />
+                        <Text style={styles.syncChipText}>
+                            {item.sincronizado ? 'Sincronizado' : 'Pendente offline'}
+                        </Text>
+                    </View>
+                    {!item.sincronizado && item.sync_error ? (
+                        <Text style={styles.syncChipError}>{item.sync_error}</Text>
+                    ) : null}
                 </View>
 
                 <Text style={styles.swipeHint}>Arraste para direita: Editar • Arraste para esquerda: Excluir</Text>
@@ -562,6 +586,12 @@ export default function MovementsScreen({ navigation }: Props) {
                                 <Text style={styles.quickInfo}>Valor/kg: {formatCurrency(selectedColheita.valor_por_kg)}</Text>
                                 <Text style={styles.quickInfo}>Valor total: {formatCurrency(selectedColheita.valor_total)}</Text>
                                 <Text style={styles.quickInfo}>Nº ticket: {selectedColheita.numero_ticket || 1}</Text>
+                                <Text style={styles.quickInfo}>
+                                    Sincronização: {selectedColheita.sincronizado ? 'Sincronizado' : 'Pendente'}
+                                </Text>
+                                {!selectedColheita.sincronizado && selectedColheita.sync_error ? (
+                                    <Text style={styles.quickInfoError}>{selectedColheita.sync_error}</Text>
+                                ) : null}
                             </View>
                         )}
 
@@ -756,6 +786,33 @@ const styles = StyleSheet.create({
         paddingHorizontal: SPACING.sm,
         paddingVertical: 4,
     },
+    syncRow: {
+        marginTop: SPACING.xs,
+    },
+    syncChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        paddingHorizontal: SPACING.sm,
+        paddingVertical: 3,
+        borderRadius: RADIUS.md,
+    },
+    syncChipSynced: {
+        backgroundColor: 'rgba(56, 142, 60, 0.18)',
+    },
+    syncChipPending: {
+        backgroundColor: 'rgba(251, 192, 45, 0.2)',
+    },
+    syncChipText: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: COLORS.textPrimary,
+    },
+    syncChipError: {
+        marginTop: 4,
+        fontSize: 11,
+        color: COLORS.error,
+    },
     swipeHint: {
         marginTop: SPACING.sm,
         color: COLORS.textLight,
@@ -889,6 +946,10 @@ const styles = StyleSheet.create({
     quickInfo: {
         color: COLORS.textPrimary,
         fontSize: 13,
+    },
+    quickInfoError: {
+        color: COLORS.error,
+        fontSize: 12,
     },
     historyBox: {
         marginTop: SPACING.md,
