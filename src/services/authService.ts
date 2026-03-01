@@ -1,8 +1,10 @@
 import NetInfo from '@react-native-community/netinfo';
+import type { Session, User } from '@supabase/supabase-js';
 
 import supabase from './supabaseClient';
 import {
     createSessaoLocal,
+    getSessaoAtiva,
     logoutSessaoAtual,
     upsertEmpresaFromSupabase,
     upsertUsuarioFromSupabase,
@@ -10,27 +12,11 @@ import {
 import { triggerFullSync } from './syncService';
 import { hasNetworkConnection } from '../utils/network';
 
-export async function signInWithSupabase(email: string, password: string): Promise<void> {
-    const netState = await NetInfo.fetch();
-    if (!hasNetworkConnection(netState)) {
-        throw new Error('É necessário estar conectado à internet para entrar.');
-    }
-
-    const normalizedEmail = email.trim().toLowerCase();
-    const { data, error } = await supabase.auth.signInWithPassword({ email: normalizedEmail, password });
-    if (error || !data.session || !data.user) {
-        console.error('Falha ao autenticar no Supabase', {
-            message: error?.message,
-            status: error?.status,
-            email: normalizedEmail,
-        });
-        throw new Error(error?.message || 'Falha ao autenticar.');
-    }
-
+async function finalizeSupabaseLogin(session: Session, user: User): Promise<void> {
     const { data: vinculo, error: vinculoError } = await supabase
         .from('empresas_usuarios')
         .select('empresa_id,cargo,ativo,empresas(id,nome,cnpj)')
-        .eq('user_id', data.user.id)
+        .eq('user_id', user.id)
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -64,21 +50,61 @@ export async function signInWithSupabase(email: string, password: string): Promi
     });
 
     const perfil = vinculo.cargo?.toLowerCase() === 'admin' ? 'admin' : 'usuario';
-    const displayName = (data.user.user_metadata?.full_name as string) || data.user.email || 'Usuário';
-    const telefone = (data.user.user_metadata?.telefone as string) || '';
+    const displayName = (user.user_metadata?.full_name as string) || user.email || 'Usuário';
+    const telefone = (user.user_metadata?.telefone as string) || '';
 
     const usuarioLocalId = await upsertUsuarioFromSupabase({
-        id: data.user.id,
+        id: user.id,
         nome: displayName,
-        email: data.user.email || '',
+        email: user.email || '',
         telefone,
         perfil,
         id_empresa: empresaLocal.id!,
     });
 
-    await createSessaoLocal(usuarioLocalId, data.session.access_token, data.session.refresh_token);
+    await createSessaoLocal(usuarioLocalId, session.access_token, session.refresh_token);
 
     await triggerFullSync();
+}
+
+export async function signInWithSupabase(email: string, password: string): Promise<void> {
+    const netState = await NetInfo.fetch();
+    if (!hasNetworkConnection(netState)) {
+        throw new Error('É necessário estar conectado à internet para entrar.');
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const { data, error } = await supabase.auth.signInWithPassword({ email: normalizedEmail, password });
+    if (error || !data.session || !data.user) {
+        console.error('Falha ao autenticar no Supabase', {
+            message: error?.message,
+            status: error?.status,
+            email: normalizedEmail,
+        });
+        throw new Error(error?.message || 'Falha ao autenticar.');
+    }
+
+    await finalizeSupabaseLogin(data.session, data.user);
+}
+
+export async function resumeSessionWithBiometrics(): Promise<void> {
+    const netState = await NetInfo.fetch();
+    if (!hasNetworkConnection(netState)) {
+        throw new Error('É necessário estar conectado à internet para entrar.');
+    }
+
+    const sessao = await getSessaoAtiva();
+    if (!sessao?.refreshToken) {
+        throw new Error('Nenhuma sessão válida foi encontrada para uso com biometria.');
+    }
+
+    const { data, error } = await supabase.auth.refreshSession({ refresh_token: sessao.refreshToken });
+    if (error || !data.session || !data.user) {
+        console.error('Falha ao renovar sessão com biometria', error?.message);
+        throw new Error(error?.message || 'Não foi possível renovar sua sessão.');
+    }
+
+    await finalizeSupabaseLogin(data.session, data.user);
 }
 
 export async function signOutSupabase(): Promise<void> {

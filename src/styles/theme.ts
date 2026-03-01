@@ -2,41 +2,41 @@
 // Paleta inspirada no café com tons premium
 
 export const COLORS = {
-    // Primary - tons de café
-    primary: '#5D4037',
-    primaryDark: '#3E2723',
-    primaryLight: '#8D6E63',
+    // Primary - inspirado no painel web (azul do botão sincronizar)
+    primary: '#2D96C2',
+    primaryDark: '#1F6F93',
+    primaryLight: '#66B7D8',
 
-    // Accent - verde folha de café
-    accent: '#2E7D32',
-    accentLight: '#4CAF50',
-    accentDark: '#1B5E20',
+    // Accent - tom elegante de apoio (teal/verde do status)
+    accent: '#0FA17E',
+    accentLight: '#7FD7C1',
+    accentDark: '#0B7A60',
 
     // Background
-    background: '#FAF3E0',
-    backgroundDark: '#F5E6CC',
+    background: '#EEF2F6',
+    backgroundDark: '#E3E9F0',
     card: '#FFFFFF',
-    cardShadow: 'rgba(93, 64, 55, 0.12)',
+    cardShadow: 'rgba(27, 39, 54, 0.10)',
 
     // Text
-    textPrimary: '#3E2723',
-    textSecondary: '#6D4C41',
-    textLight: '#A1887F',
+    textPrimary: '#1E2A36',
+    textSecondary: '#415466',
+    textLight: '#78899A',
     textWhite: '#FFFFFF',
 
     // Status
-    success: '#43A047',
-    warning: '#FF8F00',
-    error: '#E53935',
-    info: '#1E88E5',
+    success: '#1E9E6A',
+    warning: '#D18B1F',
+    error: '#D64545',
+    info: '#2D96C2',
 
     // Borders & Dividers
-    border: '#D7CCC8',
-    divider: '#EFEBE9',
+    border: '#D3DEE8',
+    divider: '#E7EDF3',
 
     // Gradient
-    gradientStart: '#5D4037',
-    gradientEnd: '#3E2723',
+    gradientStart: '#2A211B',
+    gradientEnd: '#1C1511',
 };
 
 export const FONT_FAMILY = {
@@ -104,23 +104,23 @@ export const RADIUS = {
 
 export const SHADOWS = {
     small: {
-        shadowColor: COLORS.primaryDark,
+        shadowColor: '#1B2736',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
+        shadowOpacity: 0.07,
         shadowRadius: 4,
         elevation: 2,
     },
     medium: {
-        shadowColor: COLORS.primaryDark,
+        shadowColor: '#1B2736',
         shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.12,
+        shadowOpacity: 0.1,
         shadowRadius: 8,
         elevation: 4,
     },
     large: {
-        shadowColor: COLORS.primaryDark,
+        shadowColor: '#1B2736',
         shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.15,
+        shadowOpacity: 0.12,
         shadowRadius: 16,
         elevation: 8,
     },

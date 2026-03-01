@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     View,
     Text,
@@ -11,8 +11,12 @@ import {
     Alert,
     ActivityIndicator,
     Animated,
+    Keyboard,
+    KeyboardAvoidingView,
+    Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useFocusEffect } from '@react-navigation/native';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -22,9 +26,11 @@ import {
     ColheitaEdicao,
     createColheitaEdicao,
     deleteMovimentacaoComHistorico,
+    getAllApanhadores,
     getEmpresaAtiva,
     getHistoricoEdicoes,
     getTodasMovimentacoes,
+    searchApanhadores,
 } from '../database/database';
 import { triggerFullSync } from '../services/syncService';
 
@@ -33,6 +39,7 @@ type Props = {
 };
 
 type AbaDetalhe = 'detalhes' | 'historico';
+type CampoDataFiltro = 'inicial' | 'final';
 
 export default function MovementsScreen({ navigation }: Props) {
     const [empresaId, setEmpresaId] = useState<number | null>(null);
@@ -43,12 +50,19 @@ export default function MovementsScreen({ navigation }: Props) {
     const [totalPesoFiltrado, setTotalPesoFiltrado] = useState(0);
     const [totalValorFiltrado, setTotalValorFiltrado] = useState(0);
 
-    const hoje = new Date().toLocaleDateString('pt-BR');
-    const [filtroDataInicial, setFiltroDataInicial] = useState(hoje);
-    const [filtroDataFinal, setFiltroDataFinal] = useState(hoje);
+    const [filtroDataInicial, setFiltroDataInicial] = useState('');
+    const [filtroDataFinal, setFiltroDataFinal] = useState('');
     const [filtroNome, setFiltroNome] = useState('');
     const [filtroNomeInput, setFiltroNomeInput] = useState('');
     const [showFiltros, setShowFiltros] = useState(false);
+    const [nomeSugestoes, setNomeSugestoes] = useState<string[]>([]);
+    const [loadingSugestoes, setLoadingSugestoes] = useState(false);
+    const [showNomeSugestoes, setShowNomeSugestoes] = useState(false);
+    const nomeSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [showDateModal, setShowDateModal] = useState(false);
+    const [showAndroidDatePicker, setShowAndroidDatePicker] = useState(false);
+    const [dateFieldAtivo, setDateFieldAtivo] = useState<CampoDataFiltro>('inicial');
+    const [dataSelecionadaModal, setDataSelecionadaModal] = useState(new Date());
 
     const [selectedColheita, setSelectedColheita] = useState<Colheita | null>(null);
     const [showDetails, setShowDetails] = useState(false);
@@ -107,30 +121,89 @@ export default function MovementsScreen({ navigation }: Props) {
         return date;
     };
 
+    const formatDateInput = (date: Date): string => {
+        const dia = String(date.getDate()).padStart(2, '0');
+        const mes = String(date.getMonth() + 1).padStart(2, '0');
+        const ano = String(date.getFullYear());
+        return `${dia}/${mes}/${ano}`;
+    };
+
+    const abrirModalData = (campo: CampoDataFiltro) => {
+        Keyboard.dismiss();
+        setShowNomeSugestoes(false);
+
+        const valorAtual = campo === 'inicial' ? filtroDataInicial : filtroDataFinal;
+        const dataBase = parseDateInput(valorAtual) || new Date();
+
+        setDateFieldAtivo(campo);
+        setDataSelecionadaModal(dataBase);
+
+        if (Platform.OS === 'android') {
+            setShowAndroidDatePicker(true);
+            return;
+        }
+
+        setShowDateModal(true);
+    };
+
+    const aplicarDataNoCampo = (campo: CampoDataFiltro, data: Date) => {
+        const valor = formatDateInput(data);
+        if (campo === 'inicial') {
+            setFiltroDataInicial(valor);
+            return;
+        }
+        setFiltroDataFinal(valor);
+    };
+
+    const confirmarDataModal = () => {
+        aplicarDataNoCampo(dateFieldAtivo, dataSelecionadaModal);
+        setShowDateModal(false);
+    };
+
+    const handleAndroidDateChange = (event: DateTimePickerEvent, selectedDate?: Date) => {
+        if (event.type === 'dismissed') {
+            setShowAndroidDatePicker(false);
+            return;
+        }
+
+        if (selectedDate) {
+            setDataSelecionadaModal(selectedDate);
+            aplicarDataNoCampo(dateFieldAtivo, selectedDate);
+        }
+
+        setShowAndroidDatePicker(false);
+    };
+
     const aplicarFiltro = (rowsBase?: Colheita[], nomeFiltroOverride?: string) => {
         const rows = rowsBase || movimentacoes;
 
-        const dataInicio = parseDateInput(filtroDataInicial);
-        const dataFim = parseDateInput(filtroDataFinal);
+        const dataInicialTexto = filtroDataInicial.trim();
+        const dataFinalTexto = filtroDataFinal.trim();
+        const dataInicio = dataInicialTexto ? parseDateInput(dataInicialTexto) : null;
+        const dataFim = dataFinalTexto ? parseDateInput(dataFinalTexto) : null;
 
-        if (!dataInicio || !dataFim) {
+        if ((dataInicialTexto && !dataInicio) || (dataFinalTexto && !dataFim)) {
             Alert.alert('Filtro inválido', 'Use o formato de data DD/MM/AAAA.');
             return;
         }
 
-        if (dataFim < dataInicio) {
+        if (dataInicio && dataFim && dataFim < dataInicio) {
             Alert.alert('Filtro inválido', 'A data final deve ser maior ou igual à data inicial.');
             return;
         }
 
-        dataInicio.setHours(0, 0, 0, 0);
-        dataFim.setHours(23, 59, 59, 999);
+        if (dataInicio) {
+            dataInicio.setHours(0, 0, 0, 0);
+        }
+        if (dataFim) {
+            dataFim.setHours(23, 59, 59, 999);
+        }
 
         const nomeBusca = (nomeFiltroOverride ?? filtroNome).trim().toLowerCase();
 
         const filtradas = rows.filter((item) => {
             const dataMov = new Date(item.data_hora);
-            const dataOk = dataMov >= dataInicio && dataMov <= dataFim;
+            const dataOk = (!dataInicio || dataMov >= dataInicio) && (!dataFim || dataMov <= dataFim);
             const nomeOk = !nomeBusca || item.apanhador_nome.toLowerCase().includes(nomeBusca);
             return dataOk && nomeOk;
         });
@@ -142,6 +215,48 @@ export default function MovementsScreen({ navigation }: Props) {
         setTotalPesoFiltrado(totalPeso);
         setTotalValorFiltrado(totalValor);
     };
+
+    const loadNomeSugestoes = useCallback(async (nomeQuery: string) => {
+        if (!empresaId) {
+            setNomeSugestoes([]);
+            return;
+        }
+
+        setLoadingSugestoes(true);
+        try {
+            const termo = nomeQuery.trim();
+            const apanhadores = termo
+                ? await searchApanhadores(empresaId, termo)
+                : await getAllApanhadores(empresaId);
+
+            const nomes = Array.from(
+                new Set(
+                    apanhadores
+                        .map((item) => `${item.nome} ${item.sobrenome_apelido || ''}`.trim())
+                        .filter(Boolean)
+                )
+            )
+                .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+                .slice(0, 20);
+
+            setNomeSugestoes(nomes);
+        } catch (error) {
+            console.error('Erro ao buscar nomes cadastrados:', error);
+            setNomeSugestoes([]);
+        } finally {
+            setLoadingSugestoes(false);
+        }
+    }, [empresaId]);
+
+    const agendarBuscaNome = useCallback((value: string) => {
+        if (nomeSearchTimeoutRef.current) {
+            clearTimeout(nomeSearchTimeoutRef.current);
+        }
+
+        nomeSearchTimeoutRef.current = setTimeout(() => {
+            loadNomeSugestoes(value);
+        }, 180);
+    }, [loadNomeSugestoes]);
 
     const loadData = async () => {
         try {
@@ -155,9 +270,11 @@ export default function MovementsScreen({ navigation }: Props) {
             setEmpresaId(empresa.id);
             const rows = await getTodasMovimentacoes(empresa.id);
             setMovimentacoes(rows);
-            const dataInicio = parseDateInput(filtroDataInicial);
-            const dataFim = parseDateInput(filtroDataFinal);
-            if (dataInicio && dataFim) {
+            const dataInicialTexto = filtroDataInicial.trim();
+            const dataFinalTexto = filtroDataFinal.trim();
+            const dataInicio = dataInicialTexto ? parseDateInput(dataInicialTexto) : null;
+            const dataFim = dataFinalTexto ? parseDateInput(dataFinalTexto) : null;
+            if ((dataInicialTexto && dataInicio) || (dataFinalTexto && dataFim)) {
                 aplicarFiltro(rows);
             } else {
                 setMovimentacoesFiltradas(rows);
@@ -178,6 +295,20 @@ export default function MovementsScreen({ navigation }: Props) {
         }, [])
     );
 
+    useEffect(() => {
+        if (showFiltros && showNomeSugestoes) {
+            loadNomeSugestoes(filtroNomeInput);
+        }
+    }, [showFiltros, showNomeSugestoes, loadNomeSugestoes]);
+
+    useEffect(() => {
+        return () => {
+            if (nomeSearchTimeoutRef.current) {
+                clearTimeout(nomeSearchTimeoutRef.current);
+            }
+        };
+    }, []);
+
     const onRefresh = async () => {
         setRefreshing(true);
         await loadData();
@@ -189,7 +320,15 @@ export default function MovementsScreen({ navigation }: Props) {
             <View style={styles.filterToggleBar}>
                 <TouchableOpacity
                     style={styles.filterIconButton}
-                    onPress={() => setShowFiltros((prev) => !prev)}
+                    onPress={() => {
+                        setShowFiltros((prev) => {
+                            const next = !prev;
+                            if (!next) {
+                                setShowNomeSugestoes(false);
+                            }
+                            return next;
+                        });
+                    }}
                     activeOpacity={0.8}
                 >
                     <Ionicons name="funnel-outline" size={20} color={COLORS.textWhite} />
@@ -200,39 +339,97 @@ export default function MovementsScreen({ navigation }: Props) {
                 <View style={styles.filterCard}>
                     <Text style={styles.filterTitle}>Filtros</Text>
 
-                    <Text style={styles.fieldLabel}>Data inicial (DD/MM/AAAA)</Text>
-                    <TextInput
-                        style={styles.input}
-                        value={filtroDataInicial}
-                        onChangeText={setFiltroDataInicial}
-                        placeholder="DD/MM/AAAA"
-                        placeholderTextColor={COLORS.textLight}
-                        keyboardType="number-pad"
-                    />
-
-                    <Text style={styles.fieldLabel}>Data final (DD/MM/AAAA)</Text>
-                    <TextInput
-                        style={styles.input}
-                        value={filtroDataFinal}
-                        onChangeText={setFiltroDataFinal}
-                        placeholder="DD/MM/AAAA"
-                        placeholderTextColor={COLORS.textLight}
-                        keyboardType="number-pad"
-                    />
-
                     <Text style={styles.fieldLabel}>Nome</Text>
                     <TextInput
                         style={styles.input}
                         value={filtroNomeInput}
-                        onChangeText={setFiltroNomeInput}
+                        onChangeText={(value) => {
+                            setFiltroNomeInput(value);
+                            setShowNomeSugestoes(true);
+                            agendarBuscaNome(value);
+                        }}
                         placeholder="Nome do apanhador"
                         placeholderTextColor={COLORS.textLight}
+                        onFocus={() => {
+                            setShowNomeSugestoes(true);
+                            agendarBuscaNome(filtroNomeInput);
+                        }}
+                        onSubmitEditing={() => {
+                            Keyboard.dismiss();
+                            setFiltroNome(filtroNomeInput);
+                            setShowNomeSugestoes(false);
+                            aplicarFiltro(undefined, filtroNomeInput);
+                        }}
                     />
+
+                    {showNomeSugestoes && (
+                        <View style={styles.nomeSugestoesBox}>
+                            {loadingSugestoes ? (
+                                <Text style={styles.nomeSugestaoInfo}>Buscando nomes...</Text>
+                            ) : nomeSugestoes.length === 0 ? (
+                                <Text style={styles.nomeSugestaoInfo}>Nenhum nome cadastrado encontrado.</Text>
+                            ) : (
+                                <FlatList
+                                    data={nomeSugestoes}
+                                    keyExtractor={(item) => item}
+                                    keyboardShouldPersistTaps="always"
+                                    keyboardDismissMode="none"
+                                    renderItem={({ item: nome }) => (
+                                        <TouchableOpacity
+                                            style={styles.nomeSugestaoItem}
+                                            activeOpacity={0.8}
+                                            onPress={() => {
+                                                setFiltroNomeInput(nome);
+                                                setFiltroNome(nome);
+                                                setShowNomeSugestoes(false);
+                                                aplicarFiltro(undefined, nome);
+                                                Keyboard.dismiss();
+                                            }}
+                                        >
+                                            <Text style={styles.nomeSugestaoTexto}>{nome}</Text>
+                                        </TouchableOpacity>
+                                    )}
+                                />
+                            )}
+                        </View>
+                    )}
+
+                    <View style={styles.dateFieldsRow}>
+                        <View style={styles.dateFieldCol}>
+                            <Text style={styles.fieldLabelSmall}>Data inicial</Text>
+                            <TouchableOpacity
+                                style={styles.dateInputCompact}
+                                activeOpacity={0.8}
+                                onPress={() => abrirModalData('inicial')}
+                            >
+                                <Text style={filtroDataInicial ? styles.dateInputValue : styles.dateInputPlaceholder}>
+                                    {filtroDataInicial || 'Selecionar'}
+                                </Text>
+                                <Ionicons name="calendar-outline" size={16} color={COLORS.textLight} />
+                            </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.dateFieldCol}>
+                            <Text style={styles.fieldLabelSmall}>Data final</Text>
+                            <TouchableOpacity
+                                style={styles.dateInputCompact}
+                                activeOpacity={0.8}
+                                onPress={() => abrirModalData('final')}
+                            >
+                                <Text style={filtroDataFinal ? styles.dateInputValue : styles.dateInputPlaceholder}>
+                                    {filtroDataFinal || 'Selecionar'}
+                                </Text>
+                                <Ionicons name="calendar-outline" size={16} color={COLORS.textLight} />
+                            </TouchableOpacity>
+                        </View>
+                    </View>
 
                     <TouchableOpacity
                         style={styles.filterButton}
                         onPress={() => {
+                            Keyboard.dismiss();
                             setFiltroNome(filtroNomeInput);
+                            setShowNomeSugestoes(false);
                             aplicarFiltro(undefined, filtroNomeInput);
                         }}
                     >
@@ -472,7 +669,11 @@ export default function MovementsScreen({ navigation }: Props) {
     }
 
     return (
-        <View style={styles.container}>
+        <KeyboardAvoidingView
+            style={styles.container}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
+        >
             <View style={styles.filtersWrapper}>
                 {renderFiltros()}
             </View>
@@ -483,6 +684,7 @@ export default function MovementsScreen({ navigation }: Props) {
                 renderItem={renderMovimento}
                 contentContainerStyle={styles.listContent}
                 keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="on-drag"
                 refreshControl={
                     <RefreshControl
                         refreshing={refreshing}
@@ -550,6 +752,54 @@ export default function MovementsScreen({ navigation }: Props) {
                     </View>
                 </View>
             </Modal>
+
+            <Modal
+                visible={Platform.OS !== 'android' && showDateModal}
+                transparent
+                animationType="fade"
+                onRequestClose={() => setShowDateModal(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.dateModalCard}>
+                        <Text style={styles.modalTitle}>Selecionar data</Text>
+                        <Text style={styles.modalSubTitle}>
+                            {dateFieldAtivo === 'inicial' ? 'Data inicial do filtro' : 'Data final do filtro'}
+                        </Text>
+
+                        <View style={styles.datePickerWrap}>
+                            <DateTimePicker
+                                value={dataSelecionadaModal}
+                                mode="date"
+                                display={Platform.OS === 'ios' ? 'inline' : 'calendar'}
+                                onChange={(_, selectedDate) => {
+                                    if (selectedDate) {
+                                        setDataSelecionadaModal(selectedDate);
+                                    }
+                                }}
+                            />
+                        </View>
+
+                        <View style={styles.modalActions}>
+                            <TouchableOpacity style={styles.cancelButton} onPress={() => setShowDateModal(false)}>
+                                <Text style={styles.cancelText}>Cancelar</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity style={styles.saveButton} onPress={confirmarDataModal}>
+                                <Text style={styles.saveText}>Confirmar</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
+
+            {Platform.OS === 'android' && showAndroidDatePicker && (
+                <DateTimePicker
+                    value={dataSelecionadaModal}
+                    mode="date"
+                    display="calendar"
+                    onChange={handleAndroidDateChange}
+                />
+            )}
 
             <Modal visible={showDetails} transparent animationType="fade" onRequestClose={() => setShowDetails(false)}>
                 <View style={styles.modalOverlay}>
@@ -620,7 +870,7 @@ export default function MovementsScreen({ navigation }: Props) {
                     </View>
                 </View>
             </Modal>
-        </View>
+        </KeyboardAvoidingView>
     );
 }
 
@@ -661,6 +911,8 @@ const styles = StyleSheet.create({
         borderRadius: RADIUS.md,
         padding: SPACING.md,
         marginBottom: SPACING.md,
+        zIndex: 20,
+        elevation: 5,
         ...SHADOWS.small,
     },
     filterTitle: {
@@ -705,6 +957,32 @@ const styles = StyleSheet.create({
         color: COLORS.accent,
         fontSize: 15,
         fontWeight: '700',
+    },
+    nomeSugestoesBox: {
+        marginTop: SPACING.xs,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        borderRadius: RADIUS.sm,
+        backgroundColor: COLORS.background,
+        maxHeight: 180,
+        overflow: 'hidden',
+    },
+    nomeSugestaoInfo: {
+        paddingHorizontal: SPACING.sm,
+        paddingVertical: SPACING.sm,
+        color: COLORS.textLight,
+        fontSize: 12,
+    },
+    nomeSugestaoItem: {
+        paddingHorizontal: SPACING.sm,
+        paddingVertical: SPACING.sm,
+        borderBottomWidth: 1,
+        borderBottomColor: COLORS.divider,
+    },
+    nomeSugestaoTexto: {
+        color: COLORS.textPrimary,
+        fontSize: 14,
+        fontWeight: '600',
     },
     card: {
         backgroundColor: COLORS.card,
@@ -860,6 +1138,13 @@ const styles = StyleSheet.create({
         color: COLORS.textSecondary,
         fontWeight: '600',
     },
+    fieldLabelSmall: {
+        marginTop: SPACING.md,
+        marginBottom: 6,
+        color: COLORS.textSecondary,
+        fontWeight: '600',
+        fontSize: 12,
+    },
     input: {
         marginTop: 6,
         borderWidth: 1,
@@ -870,11 +1155,52 @@ const styles = StyleSheet.create({
         color: COLORS.textPrimary,
         backgroundColor: COLORS.background,
     },
+    dateFieldsRow: {
+        flexDirection: 'row',
+        gap: SPACING.sm,
+    },
+    dateFieldCol: {
+        flex: 1,
+    },
+    dateInputCompact: {
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        borderRadius: RADIUS.sm,
+        paddingHorizontal: SPACING.sm,
+        paddingVertical: 10,
+        backgroundColor: COLORS.background,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        minHeight: 42,
+    },
+    dateInputValue: {
+        color: COLORS.textPrimary,
+        fontSize: 13,
+        fontWeight: '600',
+    },
+    dateInputPlaceholder: {
+        color: COLORS.textLight,
+        fontSize: 13,
+    },
     modalActions: {
         marginTop: SPACING.lg,
         flexDirection: 'row',
         justifyContent: 'space-between',
         gap: SPACING.sm,
+    },
+    dateModalCard: {
+        backgroundColor: COLORS.card,
+        borderRadius: RADIUS.lg,
+        padding: SPACING.md,
+    },
+    datePickerWrap: {
+        marginTop: SPACING.sm,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: COLORS.background,
+        borderRadius: RADIUS.md,
+        paddingVertical: SPACING.sm,
     },
     cancelButton: {
         flex: 1,

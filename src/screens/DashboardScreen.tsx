@@ -8,6 +8,8 @@ import {
     RefreshControl,
     Animated,
     StatusBar,
+    Alert,
+    useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -17,9 +19,13 @@ import {
     getColheitaStats,
     getColheitas,
     getUltimaColheita,
+    getSessaoAtiva,
     Empresa,
     Colheita,
+    UsuarioSessao,
 } from '../database/database';
+import { signOutSupabase } from '../services/authService';
+import { useSupabaseStatus } from '../hooks/useSupabaseStatus';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 type Props = {
@@ -28,14 +34,25 @@ type Props = {
 
 export default function DashboardScreen({ navigation }: Props) {
     const [empresa, setEmpresa] = useState<Empresa | null>(null);
+    const [sessao, setSessao] = useState<UsuarioSessao | null>(null);
     const [stats, setStats] = useState({ totalColheitas: 0, pesoTotal: 0, valorTotal: 0 });
     const [ultimaColheita, setUltimaColheita] = useState<Colheita | null>(null);
     const [colheitas, setColheitas] = useState<Colheita[]>([]);
     const [refreshing, setRefreshing] = useState(false);
     const fadeAnim = React.useRef(new Animated.Value(0)).current;
+    const { height: windowHeight } = useWindowDimensions();
+    const { status: supabaseStatus, pending: pendingSync } = useSupabaseStatus();
+    const recentListHeight = Math.max(220, Math.round(windowHeight * 0.34));
 
     const loadData = async () => {
         try {
+            const sessaoAtiva = await getSessaoAtiva();
+            if (!sessaoAtiva) {
+                navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+                return;
+            }
+            setSessao(sessaoAtiva);
+
             const emp = await getEmpresaAtiva();
             if (!emp || !emp.id) return;
             setEmpresa(emp);
@@ -93,16 +110,54 @@ export default function DashboardScreen({ navigation }: Props) {
         return value.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' kg';
     };
 
-    const renderHeader = () => (
+    const handleOpenUsers = () => {
+        if (sessao?.perfil !== 'admin') {
+            Alert.alert('Acesso restrito', 'Somente administradores podem acessar o módulo de usuários.');
+            return;
+        }
+        navigation.navigate('Users');
+    };
+
+    const handleLogout = async () => {
+        try {
+            await signOutSupabase();
+        } finally {
+            navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+        }
+    };
+
+    const isOnline = supabaseStatus === 'online';
+
+    const renderTopSection = () => (
         <Animated.View style={{ opacity: fadeAnim }}>
             {/* Header Bar */}
             <View style={styles.headerBar}>
-                <View>
-                    <Text style={styles.greeting}>Bem-vindo 👋</Text>
-                    <Text style={styles.empresaNome}>{empresa?.nome || 'Carregando...'}</Text>
+                <View style={styles.headerInfo}>
+                    <Text style={styles.headerLabel}>Fazenda</Text>
+                    <Text style={styles.empresaNome} numberOfLines={1} ellipsizeMode="tail">
+                        {empresa?.nome || 'Carregando...'}
+                    </Text>
+                    <View style={styles.statusRow}>
+                        <View style={styles.connectionBadge}>
+                            <View
+                                style={[styles.statusDot, isOnline ? styles.statusDotOnline : styles.statusDotOffline]}
+                            />
+                            <Text style={styles.statusLabel}>{isOnline ? 'Online' : 'Offline'}</Text>
+                            {pendingSync > 0 && (
+                                <View style={styles.pendingChip}>
+                                    <Text style={styles.pendingChipText}>{pendingSync}</Text>
+                                </View>
+                            )}
+                        </View>
+                    </View>
                 </View>
-                <View style={styles.headerBadge}>
-                    <Ionicons name="leaf" size={20} color={COLORS.accent} />
+                <View style={styles.headerActions}>
+                    <TouchableOpacity style={styles.headerIconButton} onPress={handleOpenUsers} activeOpacity={0.8}>
+                        <Ionicons name="settings-outline" size={18} color={COLORS.primary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.headerIconButton} onPress={handleLogout} activeOpacity={0.8}>
+                        <Ionicons name="log-out-outline" size={18} color={COLORS.error} />
+                    </TouchableOpacity>
                 </View>
             </View>
 
@@ -132,7 +187,7 @@ export default function DashboardScreen({ navigation }: Props) {
                 </View>
                 <View style={[styles.statCard, styles.statCardInfo]}>
                     <Ionicons name="time-outline" size={24} color={COLORS.textWhite} />
-                    <Text style={[styles.statValue, { fontSize: 14 }]}>
+                    <Text style={[styles.statValue, { fontSize: 13 }]}>
                         {ultimaColheita ? formatDate(ultimaColheita.data_hora) : '--'}
                     </Text>
                     <Text style={styles.statLabel}>Última Colheita</Text>
@@ -155,13 +210,6 @@ export default function DashboardScreen({ navigation }: Props) {
                 <Ionicons name="chevron-forward" size={24} color={COLORS.accent} />
             </TouchableOpacity>
 
-            {/* Recent Label */}
-            {colheitas.length > 0 && (
-                <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>Últimas Colheitas</Text>
-                    <Text style={styles.sectionCount}>{colheitas.length} registros</Text>
-                </View>
-            )}
         </Animated.View>
     );
 
@@ -169,7 +217,7 @@ export default function DashboardScreen({ navigation }: Props) {
         <View style={styles.colheitaCard}>
             <View style={styles.colheitaLeft}>
                 <View style={styles.colheitaIcon}>
-                    <Ionicons name="cafe" size={18} color={COLORS.primary} />
+                    <Ionicons name="cafe" size={18} color={COLORS.gradientStart} />
                 </View>
             </View>
             <View style={styles.colheitaCenter}>
@@ -193,7 +241,7 @@ export default function DashboardScreen({ navigation }: Props) {
 
     const renderEmpty = () => (
         <View style={styles.emptyContainer}>
-            <Ionicons name="cafe-outline" size={64} color={COLORS.border} />
+            <Ionicons name="cafe-outline" size={64} color={COLORS.gradientStart} />
             <Text style={styles.emptyTitle}>Nenhuma colheita registrada</Text>
             <Text style={styles.emptySubtitle}>
                 Toque em "Nova Colheita" para começar a registrar
@@ -204,23 +252,34 @@ export default function DashboardScreen({ navigation }: Props) {
     return (
         <View style={styles.container}>
             <StatusBar barStyle="dark-content" backgroundColor={COLORS.background} />
-            <FlatList
-                data={colheitas}
-                keyExtractor={(item) => item.id}
-                renderItem={renderColheitaItem}
-                ListHeaderComponent={renderHeader}
-                ListEmptyComponent={renderEmpty}
-                contentContainerStyle={styles.listContent}
-                refreshControl={
-                    <RefreshControl
-                        refreshing={refreshing}
-                        onRefresh={onRefresh}
-                        colors={[COLORS.primary]}
-                        tintColor={COLORS.primary}
-                    />
-                }
-                showsVerticalScrollIndicator={false}
-            />
+            <View style={styles.contentWrap}>
+                {renderTopSection()}
+
+                <View style={styles.recentSectionBox}>
+                    <View style={styles.sectionHeader}>
+                        <Text style={styles.sectionTitle}>Últimas Colheitas</Text>
+                        <Text style={styles.sectionCount}>{colheitas.length} registros</Text>
+                    </View>
+
+                    <View style={[styles.recentListContainer, { height: recentListHeight }]}>
+                        <FlatList
+                            data={colheitas}
+                            keyExtractor={(item) => item.id}
+                            renderItem={renderColheitaItem}
+                            ListEmptyComponent={renderEmpty}
+                            refreshControl={
+                                <RefreshControl
+                                    refreshing={refreshing}
+                                    onRefresh={onRefresh}
+                                    colors={[COLORS.primary]}
+                                    tintColor={COLORS.primary}
+                                />
+                            }
+                            showsVerticalScrollIndicator={false}
+                        />
+                    </View>
+                </View>
+            </View>
         </View>
     );
 }
@@ -230,10 +289,18 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: COLORS.background,
     },
-    listContent: {
+    contentWrap: {
+        flex: 1,
         paddingHorizontal: SPACING.md,
         paddingTop: SPACING.xxl + SPACING.lg,
         paddingBottom: SPACING.xxl,
+    },
+    recentSectionBox: {
+        flex: 1,
+        minHeight: 0,
+    },
+    recentListContainer: {
+        minHeight: 0,
     },
     headerBar: {
         flexDirection: 'row',
@@ -241,38 +308,97 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         marginBottom: SPACING.lg,
     },
-    greeting: {
-        fontSize: 14,
+    headerInfo: {
+        flex: 1,
+        marginRight: SPACING.sm,
+    },
+    headerLabel: {
+        fontSize: 12,
         color: COLORS.textLight,
+        textTransform: 'uppercase',
+        letterSpacing: 1,
+        fontWeight: '700',
     },
     empresaNome: {
-        fontSize: 22,
+        fontSize: 24,
         fontWeight: '700',
         color: COLORS.textPrimary,
         marginTop: 2,
     },
-    headerBadge: {
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        backgroundColor: 'rgba(46, 125, 50, 0.1)',
+    statusRow: {
+        marginTop: SPACING.xs,
+    },
+    connectionBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        alignSelf: 'flex-start',
+        paddingHorizontal: SPACING.sm,
+        paddingVertical: 4,
+        borderRadius: RADIUS.sm,
+        backgroundColor: COLORS.card,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+    },
+    statusDot: {
+        width: 10,
+        height: 10,
+        borderRadius: 5,
+    },
+    statusDotOnline: {
+        backgroundColor: COLORS.success,
+    },
+    statusDotOffline: {
+        backgroundColor: COLORS.error,
+    },
+    statusLabel: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: COLORS.textSecondary,
+    },
+    pendingChip: {
+        minWidth: 20,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: RADIUS.sm,
+        backgroundColor: COLORS.accentLight,
+        alignItems: 'center',
+    },
+    pendingChipText: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: COLORS.accent,
+    },
+    headerActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: SPACING.xs,
+    },
+    headerIconButton: {
+        width: 38,
+        height: 38,
+        borderRadius: 19,
+        backgroundColor: COLORS.card,
         alignItems: 'center',
         justifyContent: 'center',
+        borderWidth: 1,
+        borderColor: COLORS.border,
     },
     statsRow: {
         flexDirection: 'row',
         gap: SPACING.sm,
-        marginBottom: SPACING.sm,
+        marginBottom: 6,
     },
     statCard: {
         flex: 1,
         borderRadius: RADIUS.lg,
-        padding: SPACING.md,
+        paddingHorizontal: SPACING.sm + 2,
+        paddingVertical: SPACING.sm + 2,
         alignItems: 'flex-start',
-        gap: SPACING.xs,
+        gap: 2,
     },
     statCardPrimary: {
-        backgroundColor: COLORS.primary,
+        backgroundColor: COLORS.gradientStart,
     },
     statCardSecondary: {
         backgroundColor: COLORS.primaryLight,
@@ -284,13 +410,13 @@ const styles = StyleSheet.create({
         backgroundColor: COLORS.info,
     },
     statValue: {
-        fontSize: 20,
+        fontSize: 18,
         fontWeight: '700',
         color: COLORS.textWhite,
     },
     statLabel: {
-        fontSize: 11,
-        color: 'rgba(255,255,255,0.75)',
+        fontSize: 10,
+        color: 'rgba(255,255,255,0.82)',
         fontWeight: '500',
         textTransform: 'uppercase',
         letterSpacing: 0.5,
@@ -360,7 +486,9 @@ const styles = StyleSheet.create({
         width: 40,
         height: 40,
         borderRadius: 20,
-        backgroundColor: COLORS.backgroundDark,
+        backgroundColor: COLORS.background,
+        borderWidth: 1,
+        borderColor: COLORS.gradientStart,
         alignItems: 'center',
         justifyContent: 'center',
     },
@@ -400,7 +528,7 @@ const styles = StyleSheet.create({
     colheitaValor: {
         fontSize: 15,
         fontWeight: '700',
-        color: COLORS.accent,
+        color: COLORS.gradientStart,
     },
     colheitaValorKg: {
         fontSize: 11,
